@@ -6,7 +6,7 @@
 ################################################################################
 # Stage 1: Build Backend (Spring Boot API)
 ################################################################################
-FROM eclipse-temurin:26-jdk-alpine AS backend-builder
+FROM eclipse-temurin:26-jdk-alpine@sha256:7cc9b8649a735f80bb5216e135306c4b9ab428db2893d770c4516f469fa08623 AS backend-builder
 LABEL maintainer="Paulo Gustavo Veiga <pveiga@wisemapping.com>"
 
 WORKDIR /build
@@ -29,20 +29,30 @@ RUN mvn clean package -DskipTests \
 ################################################################################
 # Stage 2: Build Frontend (React/TypeScript)
 ################################################################################
-FROM node:24-alpine AS frontend-builder
+FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS frontend-builder
 
 WORKDIR /build
 
-ARG FRONTEND_BRANCH="develop"
+# Pin the frontend source used for the 6.0.11 release. The tag is only a fetch
+# locator; the full commit check below is the actual authority.
+ARG FRONTEND_REF="6.0.11"
+ARG FRONTEND_COMMIT="03e59b2cbfac56e4e6ffbf8874d8aff738fc44b0"
 
 # Install git
 RUN apk add --no-cache git
 
-# Add cache-busting argument to force fresh git clone
+# Retain an explicit cache-bust for controlled rebuilds; source remains pinned.
 ARG CACHEBUST=1
 
-# Clone the frontend repository (always fetch latest from branch)
-RUN git clone --depth 1 --branch ${FRONTEND_BRANCH} https://github.com/wisemapping/wisemapping-frontend.git
+RUN git init /build/wisemapping-frontend \
+    && git -C /build/wisemapping-frontend remote add origin https://github.com/wisemapping/wisemapping-frontend.git \
+    && git -C /build/wisemapping-frontend fetch --depth 1 origin "${FRONTEND_REF}" \
+    && git -C /build/wisemapping-frontend checkout --detach FETCH_HEAD \
+    && test "$(git -C /build/wisemapping-frontend rev-parse HEAD)" = "${FRONTEND_COMMIT}"
+
+COPY distribution/app/frontend-patches/wisemapping-frontend-03e59b2cbfac56e4e6ffbf8874d8aff738fc44b0-vi.patch /tmp/wisemapping-frontend-vi.patch
+RUN git -C /build/wisemapping-frontend apply --unidiff-zero --check /tmp/wisemapping-frontend-vi.patch \
+    && git -C /build/wisemapping-frontend apply --unidiff-zero /tmp/wisemapping-frontend-vi.patch
 
 # Patch the production config to use relative URL
 WORKDIR /build/wisemapping-frontend/packages/webapp
@@ -65,8 +75,10 @@ RUN sed -i 's|<base[^>]*>||g' /build/wisemapping-frontend/packages/webapp/dist/i
 ################################################################################
 # Stage 3: Final Runtime Image (Backend + Frontend + Nginx)
 ################################################################################
-FROM eclipse-temurin:26-jre-alpine
+FROM eclipse-temurin:26-jre-alpine@sha256:158186ab168dc35e5a8e799f6195eef61d57a86a73348fc3a1188317fc40f01c
 LABEL maintainer="Paulo Gustavo Veiga <pveiga@wisemapping.com>"
+LABEL org.opencontainers.image.source="https://github.com/nguyendinhquocx/wisemapping-open-source"
+LABEL org.opencontainers.image.licenses="WPL-1.0"
 
 # Install Nginx, tini (PID 1 init) and su-exec (privilege drop).
 # Supervisor is intentionally NOT installed: its Python dependency on
